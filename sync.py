@@ -136,15 +136,12 @@ def sanitize_title(title: str) -> str:
         replacement_text="-",
     )
 
-    # Replace spaces with hyphens for cleaner filenames
-    sanitized = sanitized.replace(" ", "-")
+    # Remove consecutive spaces
+    while "  " in sanitized:
+        sanitized = sanitized.replace("  ", " ")
 
-    # Remove consecutive hyphens
-    while "--" in sanitized:
-        sanitized = sanitized.replace("--", "-")
-
-    # Strip leading/trailing hyphens
-    sanitized = sanitized.strip("-")
+    # Strip leading/trailing spaces
+    sanitized = sanitized.strip()
 
     return sanitized if sanitized else "Untitled"
 
@@ -189,21 +186,21 @@ def generate_markdown(conversation: dict, content_hash: str) -> str:
     body_parts = []
 
     # Summary section
-    body_parts.append("## Summary\n")
+    body_parts.append("## Summary")
+    body_parts.append("")  # blank line after heading
     overview = structured.get("overview", "").strip()
-    if overview:
-        body_parts.append(overview)
-    else:
-        body_parts.append("No summary available.")
+    body_parts.append(overview if overview else "No summary available.")
 
     # Transcript section (only if segments exist)
     if transcript_segments:
-        body_parts.append("\n\n## Transcript\n")
+        body_parts.append("")  # blank line before section
+        body_parts.append("## Transcript")
+        body_parts.append("")  # blank line after heading
         for segment in transcript_segments:
             speaker_id = segment.get("speaker_id", 0)
             text = segment.get("text", "").strip()
             if text:
-                body_parts.append(f"\n**Speaker {speaker_id}:** {text}\n")
+                body_parts.append(f"**Speaker {speaker_id}:** {text}")
 
     body = "\n".join(body_parts)
 
