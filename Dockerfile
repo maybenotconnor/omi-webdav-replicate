@@ -20,12 +20,6 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 # Copy application code
 COPY sync.py .
-COPY pyproject.toml .
-COPY uv.lock .
-
-# Install the project
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev
 
 
 # Runtime stage
