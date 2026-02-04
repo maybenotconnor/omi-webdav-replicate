@@ -1,0 +1,16 @@
+[project]
+name = "omi-webdav-sync"
+version = "1.0.0"
+description = "Sync Omi wearable conversations to a WebDAV server as Markdown files"
+requires-python = ">=3.11"
+dependencies = [
+    "requests>=2.31.0",
+    "webdav4>=0.10.0",
+    "python-frontmatter>=1.0.0",
+    "pathvalidate>=3.0.0",
+    "xxhash>=3.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

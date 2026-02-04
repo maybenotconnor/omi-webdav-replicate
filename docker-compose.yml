@@ -1,0 +1,18 @@
+services:
+  omi-webdav-sync:
+    build: .
+    container_name: omi-webdav-sync
+    restart: unless-stopped
+    environment:
+      - OMI_API_KEY=${OMI_API_KEY}
+      - WEBDAV_URL=${WEBDAV_URL}
+      - WEBDAV_USER=${WEBDAV_USER}
+      - WEBDAV_PASS=${WEBDAV_PASS}
+      - OUTPUT_DIR=${OUTPUT_DIR:-/conversations}
+      - SYNC_INTERVAL_SECONDS=${SYNC_INTERVAL_SECONDS:-300}
+      - TZ=${TZ:-UTC}
+    volumes:
+      - sync-state:/app/state
+
+volumes:
+  sync-state:
