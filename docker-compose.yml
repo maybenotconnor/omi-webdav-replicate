@@ -12,7 +12,4 @@ services:
       - SYNC_INTERVAL_SECONDS=${SYNC_INTERVAL_SECONDS:-300}
       - TZ=${TZ:-UTC}
     volumes:
-      - sync-state:/app/state
-
-volumes:
-  sync-state:
+      - ./sync-state:/app/state
