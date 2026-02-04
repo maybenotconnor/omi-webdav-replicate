@@ -173,10 +173,16 @@ def generate_markdown(conversation: dict, content_hash: str) -> str:
     transcript_segments = conversation.get("transcript_segments", [])
 
     # Build front matter
+    # User-editable fields (preserved on sync) come first
     metadata = {
         "title": structured.get("title", "Untitled"),
         "date": conversation.get("created_at", ""),
         "category": structured.get("category", ""),
+        "tags": [],
+        "related": [],
+        "project": "",
+        "notes": "",
+        # System fields (prefixed with _) - overwritten on sync
         "_omi_id": conversation.get("id", ""),
         "_content_hash": content_hash,
         "_synced_at": datetime.now(timezone.utc).isoformat(),
