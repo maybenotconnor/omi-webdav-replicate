@@ -211,8 +211,8 @@ def generate_markdown(conversation: dict, content_hash: str) -> str:
     return frontmatter.dumps(post)
 
 
-def fetch_conversations() -> list[dict]:
-    """Fetch all conversations from Omi API with pagination."""
+def fetch_conversations() -> list[dict] | None:
+    """Fetch all conversations from Omi API with pagination. Returns None on error."""
     conversations = []
     offset = 0
     headers = {"Authorization": f"Bearer {OMI_API_KEY}"}
@@ -260,7 +260,7 @@ def fetch_conversations() -> list[dict]:
 
         except requests.exceptions.RequestException as e:
             logger.error(f"Failed to fetch conversations: {e}")
-            break
+            return None
 
     return conversations
 
@@ -356,6 +356,49 @@ def ensure_output_directory(webdav: WebDAVClient) -> bool:
         return False
 
 
+def handle_deletions(
+    omi_conversation_ids: set[str],
+    state: dict,
+    webdav: WebDAVClient,
+) -> int:
+    """Delete files from WebDAV for conversations no longer in Omi. Returns count."""
+    state_conv_ids = set(state.get("conversations", {}).keys())
+    deleted_ids = state_conv_ids - omi_conversation_ids
+
+    if not deleted_ids:
+        return 0
+
+    logger.info(f"Detected {len(deleted_ids)} deleted conversation(s)")
+    deleted_count = 0
+
+    for conv_id in deleted_ids:
+        if not running:
+            break
+
+        conv_state = state["conversations"].get(conv_id)
+        if not conv_state or not conv_state.get("filename"):
+            del state["conversations"][conv_id]
+            continue
+
+        filename = conv_state["filename"]
+        remote_path = f"{OUTPUT_DIR}/{filename}"
+
+        try:
+            if webdav.exists(remote_path):
+                webdav.remove(remote_path)
+                logger.info(f"Deleted: {filename} (conversation {conv_id} removed from Omi)")
+            else:
+                logger.info(f"File already gone: {filename}")
+
+            del state["conversations"][conv_id]
+            deleted_count += 1
+        except Exception as e:
+            logger.error(f"Failed to delete {filename}: {e}")
+            # Keep in state to retry next cycle
+
+    return deleted_count
+
+
 def run_sync_cycle(state: dict) -> dict:
     """Run a single sync cycle. Returns updated state."""
     logger.info("Starting sync cycle")
@@ -373,8 +416,19 @@ def run_sync_cycle(state: dict) -> dict:
 
     # Fetch conversations
     conversations = fetch_conversations()
+
+    # Safety: Don't delete if API fetch failed
+    if conversations is None:
+        logger.warning("Failed to fetch conversations, skipping cycle")
+        return state
+
+    # Handle deletions before syncing (only if we got valid data)
+    omi_conv_ids = {c.get("id") for c in conversations if c.get("id")}
+    deleted = handle_deletions(omi_conv_ids, state, webdav)
+
     if not conversations:
         logger.info("No conversations to sync")
+        # Still save state if deletions occurred
         return state
 
     # Sync each conversation
@@ -401,7 +455,7 @@ def run_sync_cycle(state: dict) -> dict:
     # Update last sync timestamp
     state["last_sync"] = datetime.now(timezone.utc).isoformat()
 
-    logger.info(f"Sync complete: {created} created, {updated} updated, {skipped} skipped")
+    logger.info(f"Sync complete: {created} created, {updated} updated, {skipped} skipped, {deleted} deleted")
     return state
 
 
