@@ -108,10 +108,15 @@ def save_state(state: dict) -> None:
 
 
 def compute_content_hash(conversation: dict) -> str:
-    """Compute xxhash64 of conversation content (structured + transcript_segments)."""
-    # Extract only content-relevant fields
+    """Compute xxhash64 of conversation content (overview + transcript only).
+
+    Excludes title so that title-only changes can be detected separately
+    and handled with a simple rename (preserving local file edits).
+    """
+    structured = conversation.get("structured", {})
+    # Only include content fields, not title (title changes handled separately)
     content = {
-        "structured": conversation.get("structured", {}),
+        "overview": structured.get("overview", ""),
         "transcript_segments": conversation.get("transcript_segments", []),
     }
     # Normalize to JSON with sorted keys for consistent hashing
@@ -276,36 +281,93 @@ def sync_conversation(
         logger.warning("Conversation missing ID, skipping")
         return False
 
-    # Compute content hash
+    # Get current title and content hash from Omi
+    structured = conversation.get("structured", {})
+    current_title = structured.get("title", "Untitled")
+    created_at = conversation.get("created_at", "")
     content_hash = compute_content_hash(conversation)
 
     # Check existing state
     conv_state = state.get("conversations", {}).get(conv_id)
 
-    if conv_state and conv_state.get("omi_hash") == content_hash:
-        # No changes, skip
-        return False
+    # Determine what changed
+    title_changed = False
+    content_changed = True  # Assume changed for new conversations
+    old_filename = None
+
+    if conv_state:
+        stored_title = conv_state.get("title", "")
+        stored_hash = conv_state.get("omi_hash", "")
+
+        title_changed = stored_title and stored_title != current_title
+        content_changed = stored_hash != content_hash
+
+        if not title_changed and not content_changed:
+            # Nothing changed, skip
+            return False
 
     # Determine filename
     if conv_state and conv_state.get("filename"):
-        # Use existing filename to avoid duplicates
-        filename = conv_state["filename"]
+        if title_changed:
+            # Title changed - need to rename the file
+            old_filename = conv_state["filename"]
+            # Temporarily remove old filename from state to allow reuse of similar names
+            temp_state = state.copy()
+            temp_state["conversations"] = {
+                k: v for k, v in state.get("conversations", {}).items()
+                if k != conv_id
+            }
+            filename = generate_filename(current_title, created_at, temp_state)
+            logger.info(
+                f"Title changed: '{stored_title}' -> '{current_title}', "
+                f"renaming {old_filename} -> {filename}"
+            )
+        else:
+            # No title change, use existing filename
+            filename = conv_state["filename"]
     else:
-        # Generate new filename
-        structured = conversation.get("structured", {})
-        title = structured.get("title", "Untitled")
-        created_at = conversation.get("created_at", "")
-        filename = generate_filename(title, created_at, state)
+        # Generate new filename for new conversation
+        filename = generate_filename(current_title, created_at, state)
 
-    # Generate markdown
+    remote_path = f"{OUTPUT_DIR}/{filename}"
+
+    # Handle title-only change: use move() to preserve local file modifications
+    if title_changed and not content_changed and old_filename:
+        old_remote_path = f"{OUTPUT_DIR}/{old_filename}"
+        try:
+            if webdav.exists(old_remote_path):
+                webdav.move(old_remote_path, remote_path, overwrite=True)
+                logger.info(f"Renamed: {old_filename} -> {filename}")
+
+                # Update state
+                if "conversations" not in state:
+                    state["conversations"] = {}
+                state["conversations"][conv_id] = {
+                    "omi_hash": content_hash,
+                    "filename": filename,
+                    "title": current_title,
+                }
+                return True
+            else:
+                # Old file missing - fall through to create fresh file
+                logger.warning(
+                    f"Old file not found for rename: {old_filename}, "
+                    "will create fresh file"
+                )
+
+        except Exception as e:
+            logger.error(f"Failed to rename {old_filename} -> {filename}: {e}")
+            return False
+
+    # Content changed: generate and upload new markdown
     markdown_content = generate_markdown(conversation, content_hash)
 
-    # Check if file exists and preserve user metadata
-    remote_path = f"{OUTPUT_DIR}/{filename}"
+    # Check if file exists and preserve user metadata (frontmatter only)
+    metadata_source_path = f"{OUTPUT_DIR}/{old_filename}" if old_filename else remote_path
     try:
-        if webdav.exists(remote_path):
+        if webdav.exists(metadata_source_path):
             # Fetch existing file to preserve user-added front matter
-            existing_content = webdav.read_bytes(remote_path)
+            existing_content = webdav.read_bytes(metadata_source_path)
             try:
                 existing_post = frontmatter.loads(existing_content.decode("utf-8"))
                 new_post = frontmatter.loads(markdown_content)
@@ -317,24 +379,35 @@ def sync_conversation(
 
                 markdown_content = frontmatter.dumps(new_post)
             except Exception as e:
-                logger.warning(f"Could not parse existing file {filename}: {e}")
+                logger.warning(f"Could not parse existing file {metadata_source_path}: {e}")
     except Exception as e:
-        logger.warning(f"Could not check existing file {filename}: {e}")
+        logger.warning(f"Could not check existing file {metadata_source_path}: {e}")
 
     # Upload to WebDAV
     try:
         content_bytes = markdown_content.encode("utf-8")
         webdav.upload_fileobj(BytesIO(content_bytes), remote_path, overwrite=True)
 
-        action = "Updated" if conv_state else "Created"
+        # Delete old file if this was a rename operation
+        if old_filename and old_filename != filename:
+            old_remote_path = f"{OUTPUT_DIR}/{old_filename}"
+            try:
+                if webdav.exists(old_remote_path):
+                    webdav.remove(old_remote_path)
+                    logger.info(f"Deleted old file: {old_filename}")
+            except Exception as e:
+                logger.warning(f"Failed to delete old file {old_filename}: {e}")
+
+        action = "Renamed" if old_filename else ("Updated" if conv_state else "Created")
         logger.info(f"{action}: {filename}")
 
-        # Update state
+        # Update state (include title for change detection)
         if "conversations" not in state:
             state["conversations"] = {}
         state["conversations"][conv_id] = {
             "omi_hash": content_hash,
             "filename": filename,
+            "title": current_title,
         }
 
         return True
