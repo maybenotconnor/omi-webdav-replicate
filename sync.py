@@ -243,7 +243,10 @@ def fetch_conversations() -> list[dict] | None:
 
             if response.status_code == 429:
                 # Rate limited - exponential backoff
-                retry_after = int(response.headers.get("Retry-After", "60"))
+                try:
+                    retry_after = int(response.headers.get("Retry-After", "60"))
+                except (ValueError, TypeError):
+                    retry_after = 60
                 logger.warning(f"Rate limited, sleeping for {retry_after}s")
                 time.sleep(retry_after)
                 continue
@@ -274,6 +277,7 @@ def sync_conversation(
     conversation: dict,
     state: dict,
     webdav: WebDAVClient,
+    remote_files: set[str] | None = None,
 ) -> bool:
     """Sync a single conversation to WebDAV. Returns True if file was created/updated."""
     conv_id = conversation.get("id", "")
@@ -303,8 +307,37 @@ def sync_conversation(
         content_changed = stored_hash != content_hash
 
         if not title_changed and not content_changed:
-            # Nothing changed, skip
-            return False
+            # Check if the file still exists on WebDAV before skipping
+            existing_filename = conv_state.get("filename")
+            if existing_filename and remote_files is not None:
+                if existing_filename in remote_files:
+                    return False
+                else:
+                    logger.info(
+                        f"File missing on WebDAV: {existing_filename}, "
+                        "will recreate"
+                    )
+                    # Force content_changed so the file gets recreated
+                    content_changed = True
+            elif existing_filename:
+                # No directory listing available, fall back to per-file check
+                existing_path = f"{OUTPUT_DIR}/{existing_filename}"
+                try:
+                    if webdav.exists(existing_path):
+                        return False
+                    else:
+                        logger.info(
+                            f"File missing on WebDAV: {existing_filename}, "
+                            "will recreate"
+                        )
+                        content_changed = True
+                except Exception as e:
+                    logger.warning(
+                        f"Could not check file existence for {existing_filename}: {e}"
+                    )
+                    return False
+            else:
+                return False
 
     # Determine filename
     if conv_state and conv_state.get("filename"):
@@ -367,7 +400,9 @@ def sync_conversation(
     try:
         if webdav.exists(metadata_source_path):
             # Fetch existing file to preserve user-added front matter
-            existing_content = webdav.read_bytes(metadata_source_path)
+            buffer = BytesIO()
+            webdav.download_fileobj(metadata_source_path, buffer)
+            existing_content = buffer.getvalue()
             try:
                 existing_post = frontmatter.loads(existing_content.decode("utf-8"))
                 new_post = frontmatter.loads(markdown_content)
@@ -504,6 +539,16 @@ def run_sync_cycle(state: dict) -> dict:
         # Still save state if deletions occurred
         return state
 
+    # List remote files once to avoid per-file PROPFIND requests
+    remote_files = None
+    try:
+        listing = webdav.ls(OUTPUT_DIR, detail=False)
+        # ls() returns paths relative to WebDAV base URL; extract basenames
+        remote_files = {path.rsplit("/", 1)[-1] for path in listing}
+        logger.info(f"Found {len(remote_files)} file(s) in {OUTPUT_DIR}")
+    except Exception as e:
+        logger.warning(f"Could not list {OUTPUT_DIR}, will fall back to per-file checks: {e}")
+
     # Sync each conversation
     created = 0
     updated = 0
@@ -517,7 +562,7 @@ def run_sync_cycle(state: dict) -> dict:
         conv_id = conversation.get("id", "")
         was_existing = conv_id in state.get("conversations", {})
 
-        if sync_conversation(conversation, state, webdav):
+        if sync_conversation(conversation, state, webdav, remote_files):
             if was_existing:
                 updated += 1
             else:

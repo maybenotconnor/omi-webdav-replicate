@@ -219,6 +219,12 @@ The service uses the following Python packages:
 - To force a full re-sync, delete the state file: `rm ./sync-state/sync_state.json`
 - Restart the container: `docker compose restart`
 
+## Known Limitations
+
+- **Duplicate title collision**: If two conversations have the same title and the same creation date, the generated filenames will collide and one will overwrite the other. Conversations with the same title but different dates are disambiguated with a `_MMDDYYYY` suffix.
+- **Empty stored title skips rename detection**: If a conversation was synced before title tracking was added to the state file, title changes for that conversation won't trigger a file rename. Deleting `sync_state.json` and restarting will resolve this.
+- **Sync errors counted as skipped**: The summary log at the end of each cycle does not distinguish between conversations that were skipped because nothing changed and conversations that failed to sync due to errors. Check the detailed per-file log lines to identify failures.
+
 ## License
 
 MIT
