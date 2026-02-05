@@ -318,10 +318,12 @@ def sync_conversation(
 
     # Check if file exists and preserve user metadata
     remote_path = f"{OUTPUT_DIR}/{filename}"
+    # When renaming, read metadata from old file location
+    metadata_source_path = f"{OUTPUT_DIR}/{old_filename}" if old_filename else remote_path
     try:
-        if webdav.exists(remote_path):
+        if webdav.exists(metadata_source_path):
             # Fetch existing file to preserve user-added front matter
-            existing_content = webdav.read_bytes(remote_path)
+            existing_content = webdav.read_bytes(metadata_source_path)
             try:
                 existing_post = frontmatter.loads(existing_content.decode("utf-8"))
                 new_post = frontmatter.loads(markdown_content)
@@ -333,9 +335,9 @@ def sync_conversation(
 
                 markdown_content = frontmatter.dumps(new_post)
             except Exception as e:
-                logger.warning(f"Could not parse existing file {filename}: {e}")
+                logger.warning(f"Could not parse existing file {metadata_source_path}: {e}")
     except Exception as e:
-        logger.warning(f"Could not check existing file {filename}: {e}")
+        logger.warning(f"Could not check existing file {metadata_source_path}: {e}")
 
     # Upload to WebDAV
     try:
