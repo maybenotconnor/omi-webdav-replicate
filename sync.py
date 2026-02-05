@@ -108,10 +108,15 @@ def save_state(state: dict) -> None:
 
 
 def compute_content_hash(conversation: dict) -> str:
-    """Compute xxhash64 of conversation content (structured + transcript_segments)."""
-    # Extract only content-relevant fields
+    """Compute xxhash64 of conversation content (overview + transcript only).
+
+    Excludes title so that title-only changes can be detected separately
+    and handled with a simple rename (preserving local file edits).
+    """
+    structured = conversation.get("structured", {})
+    # Only include content fields, not title (title changes handled separately)
     content = {
-        "structured": conversation.get("structured", {}),
+        "overview": structured.get("overview", ""),
         "transcript_segments": conversation.get("transcript_segments", []),
     }
     # Normalize to JSON with sorted keys for consistent hashing
@@ -333,18 +338,22 @@ def sync_conversation(
             if webdav.exists(old_remote_path):
                 webdav.move(old_remote_path, remote_path, overwrite=True)
                 logger.info(f"Renamed: {old_filename} -> {filename}")
-            else:
-                logger.warning(f"Old file not found for rename: {old_filename}")
 
-            # Update state
-            if "conversations" not in state:
-                state["conversations"] = {}
-            state["conversations"][conv_id] = {
-                "omi_hash": content_hash,
-                "filename": filename,
-                "title": current_title,
-            }
-            return True
+                # Update state
+                if "conversations" not in state:
+                    state["conversations"] = {}
+                state["conversations"][conv_id] = {
+                    "omi_hash": content_hash,
+                    "filename": filename,
+                    "title": current_title,
+                }
+                return True
+            else:
+                # Old file missing - fall through to create fresh file
+                logger.warning(
+                    f"Old file not found for rename: {old_filename}, "
+                    "will create fresh file"
+                )
 
         except Exception as e:
             logger.error(f"Failed to rename {old_filename} -> {filename}: {e}")
