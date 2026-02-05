@@ -276,26 +276,34 @@ def sync_conversation(
         logger.warning("Conversation missing ID, skipping")
         return False
 
-    # Compute content hash
+    # Get current title and content hash from Omi
+    structured = conversation.get("structured", {})
+    current_title = structured.get("title", "Untitled")
+    created_at = conversation.get("created_at", "")
     content_hash = compute_content_hash(conversation)
 
     # Check existing state
     conv_state = state.get("conversations", {}).get(conv_id)
 
-    if conv_state and conv_state.get("omi_hash") == content_hash:
-        # No changes, skip
-        return False
-
-    # Get current title from Omi
-    structured = conversation.get("structured", {})
-    current_title = structured.get("title", "Untitled")
-    created_at = conversation.get("created_at", "")
-
-    # Determine filename and check for title changes
+    # Determine what changed
+    title_changed = False
+    content_changed = True  # Assume changed for new conversations
     old_filename = None
-    if conv_state and conv_state.get("filename"):
+
+    if conv_state:
         stored_title = conv_state.get("title", "")
-        if stored_title and stored_title != current_title:
+        stored_hash = conv_state.get("omi_hash", "")
+
+        title_changed = stored_title and stored_title != current_title
+        content_changed = stored_hash != content_hash
+
+        if not title_changed and not content_changed:
+            # Nothing changed, skip
+            return False
+
+    # Determine filename
+    if conv_state and conv_state.get("filename"):
+        if title_changed:
             # Title changed - need to rename the file
             old_filename = conv_state["filename"]
             # Temporarily remove old filename from state to allow reuse of similar names
@@ -305,7 +313,10 @@ def sync_conversation(
                 if k != conv_id
             }
             filename = generate_filename(current_title, created_at, temp_state)
-            logger.info(f"Title changed: '{stored_title}' -> '{current_title}', renaming {old_filename} -> {filename}")
+            logger.info(
+                f"Title changed: '{stored_title}' -> '{current_title}', "
+                f"renaming {old_filename} -> {filename}"
+            )
         else:
             # No title change, use existing filename
             filename = conv_state["filename"]
@@ -313,12 +324,36 @@ def sync_conversation(
         # Generate new filename for new conversation
         filename = generate_filename(current_title, created_at, state)
 
-    # Generate markdown
+    remote_path = f"{OUTPUT_DIR}/{filename}"
+
+    # Handle title-only change: use move() to preserve local file modifications
+    if title_changed and not content_changed and old_filename:
+        old_remote_path = f"{OUTPUT_DIR}/{old_filename}"
+        try:
+            if webdav.exists(old_remote_path):
+                webdav.move(old_remote_path, remote_path, overwrite=True)
+                logger.info(f"Renamed: {old_filename} -> {filename}")
+            else:
+                logger.warning(f"Old file not found for rename: {old_filename}")
+
+            # Update state
+            if "conversations" not in state:
+                state["conversations"] = {}
+            state["conversations"][conv_id] = {
+                "omi_hash": content_hash,
+                "filename": filename,
+                "title": current_title,
+            }
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to rename {old_filename} -> {filename}: {e}")
+            return False
+
+    # Content changed: generate and upload new markdown
     markdown_content = generate_markdown(conversation, content_hash)
 
-    # Check if file exists and preserve user metadata
-    remote_path = f"{OUTPUT_DIR}/{filename}"
-    # When renaming, read metadata from old file location
+    # Check if file exists and preserve user metadata (frontmatter only)
     metadata_source_path = f"{OUTPUT_DIR}/{old_filename}" if old_filename else remote_path
     try:
         if webdav.exists(metadata_source_path):
