@@ -303,8 +303,27 @@ def sync_conversation(
         content_changed = stored_hash != content_hash
 
         if not title_changed and not content_changed:
-            # Nothing changed, skip
-            return False
+            # Check if the file still exists on WebDAV before skipping
+            existing_filename = conv_state.get("filename")
+            if existing_filename:
+                existing_path = f"{OUTPUT_DIR}/{existing_filename}"
+                try:
+                    if webdav.exists(existing_path):
+                        return False
+                    else:
+                        logger.info(
+                            f"File missing on WebDAV: {existing_filename}, "
+                            "will recreate"
+                        )
+                        # Force content_changed so the file gets recreated
+                        content_changed = True
+                except Exception as e:
+                    logger.warning(
+                        f"Could not check file existence for {existing_filename}: {e}"
+                    )
+                    return False
+            else:
+                return False
 
     # Determine filename
     if conv_state and conv_state.get("filename"):
@@ -367,7 +386,9 @@ def sync_conversation(
     try:
         if webdav.exists(metadata_source_path):
             # Fetch existing file to preserve user-added front matter
-            existing_content = webdav.read_bytes(metadata_source_path)
+            buffer = BytesIO()
+            webdav.download_fileobj(metadata_source_path, buffer)
+            existing_content = buffer.getvalue()
             try:
                 existing_post = frontmatter.loads(existing_content.decode("utf-8"))
                 new_post = frontmatter.loads(markdown_content)
